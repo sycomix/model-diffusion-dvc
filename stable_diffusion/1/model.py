@@ -68,10 +68,8 @@ class TritonPythonModel:
         """
         current_name: str = os.path.dirname(os.path.abspath(__file__))
         self.device = "cpu" if args["model_instance_kind"] == "CPU" else "cuda"
-        self.tokenizer = CLIPTokenizer.from_pretrained(
-            current_name + "/tokenizer/"
-        )
-        self.scheduler_config_path = current_name + "/scheduler/"
+        self.tokenizer = CLIPTokenizer.from_pretrained(f"{current_name}/tokenizer/")
+        self.scheduler_config_path = f"{current_name}/scheduler/"
         self.scheduler = DPMSolverMultistepScheduler.from_config(self.scheduler_config_path)
 
         self.height = 512
@@ -87,6 +85,8 @@ class TritonPythonModel:
         :return: text as input tensors
         """
         responses = []
+        # get unconditional embeddings for classifier free guidance
+        batch_size = 1
         # for loop for batch requests (disabled in our case)
         for request in requests:
             # binary data typed back to string
@@ -102,12 +102,11 @@ class TritonPythonModel:
                 .as_numpy()
                 .tolist()
             ]
-            num_images_per_prompt = [
-                t
-                for t in pb_utils.get_input_tensor_by_name(request, "SAMPLES")
+            num_images_per_prompt = list(
+                pb_utils.get_input_tensor_by_name(request, "SAMPLES")
                 .as_numpy()
                 .tolist()
-            ][0]
+            )[0]
             scheduler = [
                 t.decode("UTF-8")
                 for t in pb_utils.get_input_tensor_by_name(request, "SCHEDULER")
@@ -118,24 +117,21 @@ class TritonPythonModel:
                 self.scheduler = eval(
                     f"{scheduler}.from_config(self.scheduler_config_path)"
                 )
-            self.num_inference_steps = [
-                t
-                for t in pb_utils.get_input_tensor_by_name(request, "STEPS")
+            self.num_inference_steps = list(
+                pb_utils.get_input_tensor_by_name(request, "STEPS")
                 .as_numpy()
                 .tolist()
-            ][0]
-            self.guidance_scale = [
-                t
-                for t in pb_utils.get_input_tensor_by_name(request, "GUIDANCE_SCALE")
+            )[0]
+            self.guidance_scale = list(
+                pb_utils.get_input_tensor_by_name(request, "GUIDANCE_SCALE")
                 .as_numpy()
                 .tolist()
-            ][0]
-            seed = [
-                t
-                for t in pb_utils.get_input_tensor_by_name(request, "SEED")
+            )[0]
+            seed = list(
+                pb_utils.get_input_tensor_by_name(request, "SEED")
                 .as_numpy()
                 .tolist()
-            ][0]
+            )[0]
 
             ## Fix later
             if negative_prompt[0] == "NONE":
@@ -173,11 +169,10 @@ class TritonPythonModel:
                 raise pb_utils.TritonModelException(
                     inference_response.error().message()
                 )
-            else:
-                output = pb_utils.get_output_tensor_by_name(
-                    inference_response, "last_hidden_state"
-                )
-                text_embeddings: torch.Tensor = torch.from_dlpack(output.to_dlpack())
+            output = pb_utils.get_output_tensor_by_name(
+                inference_response, "last_hidden_state"
+            )
+            text_embeddings: torch.Tensor = torch.from_dlpack(output.to_dlpack())
 
             # duplicate text embeddings for each generation per prompt, using mps friendly method
             bs_embed, seq_len, _ = text_embeddings.shape
@@ -190,8 +185,6 @@ class TritonPythonModel:
             # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
             # corresponds to doing no classifier free guidance.
             do_classifier_free_guidance = self.guidance_scale > 1.0
-            # get unconditional embeddings for classifier free guidance
-            batch_size = 1
             if do_classifier_free_guidance:
                 uncond_tokens: List[str]
                 if negative_prompt is None:
@@ -239,13 +232,12 @@ class TritonPythonModel:
                     raise pb_utils.TritonModelException(
                         inference_response.error().message()
                     )
-                else:
-                    output = pb_utils.get_output_tensor_by_name(
-                        inference_response, "last_hidden_state"
-                    )
-                    uncond_embeddings: torch.Tensor = torch.from_dlpack(
-                        output.to_dlpack()
-                    )
+                output = pb_utils.get_output_tensor_by_name(
+                    inference_response, "last_hidden_state"
+                )
+                uncond_embeddings: torch.Tensor = torch.from_dlpack(
+                    output.to_dlpack()
+                )
 
                 # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
                 seq_len = uncond_embeddings.shape[1]
@@ -333,11 +325,10 @@ class TritonPythonModel:
                     raise pb_utils.TritonModelException(
                         inference_response.error().message()
                     )
-                else:
-                    output = pb_utils.get_output_tensor_by_name(
-                        inference_response, "out_sample"
-                    )
-                    noise_pred: torch.Tensor = torch.from_dlpack(output.to_dlpack())
+                output = pb_utils.get_output_tensor_by_name(
+                    inference_response, "out_sample"
+                )
+                noise_pred: torch.Tensor = torch.from_dlpack(output.to_dlpack())
 
                 # perform guidance
                 if do_classifier_free_guidance:
@@ -370,12 +361,11 @@ class TritonPythonModel:
                 raise pb_utils.TritonModelException(
                     inference_response.error().message()
                 )
-            else:
-                output = pb_utils.get_output_tensor_by_name(inference_response, "sample")
-                image: torch.Tensor = torch.from_dlpack(output.to_dlpack())
-                image = image.type(dtype=torch.float32)
-                image = (image / 2 + 0.5).clamp(0, 1)
-                image = image.cpu().permute(0, 2, 3, 1).numpy()
+            output = pb_utils.get_output_tensor_by_name(inference_response, "sample")
+            image: torch.Tensor = torch.from_dlpack(output.to_dlpack())
+            image = image.type(dtype=torch.float32)
+            image = (image / 2 + 0.5).clamp(0, 1)
+            image = image.cpu().permute(0, 2, 3, 1).numpy()
 
             tensor_output = [pb_utils.Tensor("IMAGES", image)]
             responses.append(pb_utils.InferenceResponse(tensor_output))
